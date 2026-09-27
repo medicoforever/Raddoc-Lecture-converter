@@ -1,10 +1,11 @@
 
 import { useState, useCallback, useEffect } from 'react';
 import { GeminiModel, ProcessingStatus, CorrectionMode } from '../types';
-import type { AudioFile, MergeGroup } from '../types';
+import type { AudioFile, MergeGroup, UploadProgressItem } from '../types';
 import { transcribeAudio, analyzeTranscript, enhanceAndCorrectContent, agenticEnhancement } from '../services/geminiService';
 import { downloadDocuments, openInGoogleDocs } from '../services/documentService';
 import { addFile, getFile, deleteFile } from '../services/dbService';
+import { formatSpeed } from '../services/fileUtils';
 
 // Helper to convert an AudioBuffer to a WAV file Blob.
 const audioBufferToWavBlob = (buffer: AudioBuffer): Blob => {
@@ -107,7 +108,9 @@ const IN_PROGRESS_STATUSES = [
 export const useAudioProcessor = () => {
   const [files, setFiles] = useState<AudioFile[]>([]);
   const [groups, setGroups] = useState<MergeGroup[]>([]);
-  const [selectedModel, setSelectedModel] = useState<GeminiModel>(GeminiModel.PRO);
+  const [uploadProgressList, setUploadProgressList] = useState<UploadProgressItem[]>([]);
+  const [isUploading, setIsUploading] = useState<boolean>(false);
+  const [selectedModel, setSelectedModel] = useState<GeminiModel>(GeminiModel.GEMINI_3_8_FLASH);
   const [isProcessing, setIsProcessing] = useState<boolean>(false);
   const [correctionMode, setCorrectionMode] = useState<CorrectionMode>(CorrectionMode.STANDARD);
   const [isInitialized, setIsInitialized] = useState<boolean>(false);
@@ -405,36 +408,126 @@ export const useAudioProcessor = () => {
     }
   }, [files, processSplitFile]);
 
-  const handleFilesAdded = (incomingFiles: FileList | null) => {
-    if (!incomingFiles) return;
+  const clearUploadProgressItem = useCallback((id: string) => {
+    setUploadProgressList(prev => prev.filter(item => item.id !== id));
+  }, []);
 
-    const newAudioFiles: AudioFile[] = [];
-    const filePromises: Promise<void>[] = [];
+  const clearAllUploadProgress = useCallback(() => {
+    setUploadProgressList([]);
+  }, []);
 
-    Array.from(incomingFiles)
-      .filter(file => file.type.startsWith('audio/') || file.type.startsWith('video/') || file.type === 'application/pdf')
-      .forEach(file => {
-        const newFile: AudioFile = {
-          id: `${file.name}-${Date.now()}`,
+  const handleFilesAdded = useCallback(async (incomingFiles: FileList | null) => {
+    if (!incomingFiles || incomingFiles.length === 0) return;
+
+    const validFiles = Array.from(incomingFiles).filter(
+      file => file.type.startsWith('audio/') || file.type.startsWith('video/') || file.type === 'application/pdf'
+    );
+
+    if (validFiles.length === 0) return;
+
+    setIsUploading(true);
+
+    const initialUploadItems: UploadProgressItem[] = validFiles.map(file => ({
+      id: `upload-${file.name}-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
+      fileName: file.name,
+      fileSize: file.size,
+      fileType: file.type,
+      loadedBytes: 0,
+      totalBytes: file.size || 1,
+      percentage: 0,
+      status: 'uploading',
+      speed: '0 B/s',
+    }));
+
+    setUploadProgressList(prev => [...prev, ...initialUploadItems]);
+
+    // Process each file with progress
+    const uploadPromises = validFiles.map(async (file, index) => {
+      const uploadItem = initialUploadItems[index];
+      const newFileId = `${file.name}-${Date.now()}-${Math.random().toString(36).substring(2, 5)}`;
+      const total = file.size || 1;
+      const startTime = Date.now();
+
+      // Chunk size between 256KB and 2MB
+      const chunkSize = Math.max(256 * 1024, Math.min(2 * 1024 * 1024, Math.ceil(total / 25)));
+
+      try {
+        let loaded = 0;
+        
+        // Chunked read to track actual upload bytes
+        for (let offset = 0; offset < total; offset += chunkSize) {
+          const chunk = file.slice(offset, offset + chunkSize);
+          await new Promise<void>((resolve, reject) => {
+            const reader = new FileReader();
+            reader.onload = () => {
+              loaded = Math.min(total, offset + chunk.size);
+              const elapsedSec = Math.max(0.05, (Date.now() - startTime) / 1000);
+              const bytesPerSec = loaded / elapsedSec;
+              const percent = Math.min(92, Math.round((loaded / total) * 92));
+              
+              setUploadProgressList(prev => prev.map(item => 
+                item.id === uploadItem.id 
+                  ? { 
+                      ...item, 
+                      loadedBytes: loaded, 
+                      percentage: percent, 
+                      speed: formatSpeed(bytesPerSec) 
+                    } 
+                  : item
+              ));
+              resolve();
+            };
+            reader.onerror = () => reject(reader.error || new Error('File read error'));
+            reader.readAsArrayBuffer(chunk);
+          });
+        }
+
+        // Indexing / storing phase
+        setUploadProgressList(prev => prev.map(item => 
+          item.id === uploadItem.id 
+            ? { ...item, status: 'indexing', percentage: 96, loadedBytes: total } 
+            : item
+        ));
+
+        await addFile(newFileId, file);
+
+        const newAudioFile: AudioFile = {
+          id: newFileId,
           file,
+          size: file.size,
           status: ProcessingStatus.QUEUED,
           progress: 0,
           isSplit: false,
         };
-        newAudioFiles.push(newFile);
-        filePromises.push(addFile(newFile.id, newFile.file));
-      });
 
-    if (newAudioFiles.length > 0) {
-      Promise.all(filePromises)
-        .then(() => {
-          setFiles(prev => [...prev, ...newAudioFiles]);
-        })
-        .catch(error => {
-          console.error("Failed to store uploaded files:", error);
-        });
-    }
-  };
+        setFiles(prev => [...prev, newAudioFile]);
+
+        setUploadProgressList(prev => prev.map(item => 
+          item.id === uploadItem.id 
+            ? { 
+                ...item, 
+                status: 'completed', 
+                percentage: 100, 
+                loadedBytes: total, 
+                completedAt: Date.now() 
+              } 
+            : item
+        ));
+
+      } catch (error) {
+        console.error("Upload error for file:", file.name, error);
+        const errorMessage = error instanceof Error ? error.message : "Failed to upload file.";
+        setUploadProgressList(prev => prev.map(item => 
+          item.id === uploadItem.id 
+            ? { ...item, status: 'error', errorMessage } 
+            : item
+        ));
+      }
+    });
+
+    await Promise.all(uploadPromises);
+    setIsUploading(false);
+  }, []);
   
   const handleMergeFiles = (fileIds: string[], name: string) => {
     const newGroup: MergeGroup = {
@@ -547,6 +640,10 @@ export const useAudioProcessor = () => {
   return {
     files,
     groups,
+    uploadProgressList,
+    isUploading,
+    clearUploadProgressItem,
+    clearAllUploadProgress,
     selectedModel,
     isProcessing,
     correctionMode,

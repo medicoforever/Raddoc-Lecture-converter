@@ -10,6 +10,7 @@ import {
   SYNTHESIZER_AGENT_PROMPT
 } from '../constants';
 import type { GeminiModel } from '../types';
+import { cleanLatexAndFormatting } from './documentService';
 
 const ai = new GoogleGenAI({ apiKey: process.env.API_KEY as string });
 
@@ -136,7 +137,7 @@ export const analyzeTranscript = async (transcript: string, model: GeminiModel):
       model: model,
       contents: fullPrompt,
     });
-    return response.text;
+    return cleanLatexAndFormatting(response.text);
   } catch (error) {
     console.error("Error during analysis:", error);
     throw new Error("Failed to analyze transcript. The content may be too complex or the model is unavailable.");
@@ -164,7 +165,7 @@ export const enhanceAndCorrectContent = async (content: string, model: GeminiMod
     const { content: correctionsWithCitations, sources: sourcesMarkdown } = processCitationsAndSources(corrections, candidate);
 
     const title = '\n\n---\n\n## ERROR CORRECTION AND MISSING THINGS\n\n';
-    return `${title}${correctionsWithCitations}${sourcesMarkdown}`;
+    return cleanLatexAndFormatting(`${title}${correctionsWithCitations}${sourcesMarkdown}`);
   } catch (error)
  {
     console.error("Error during content enhancement:", error);
@@ -224,7 +225,7 @@ export const agenticEnhancement = async (content: string, model: GeminiModel): P
     const { content: correctionsWithCitations, sources: sourcesMarkdown } = processCitationsAndSources(corrections, candidate);
 
     const title = '\n\n---\n\n## ENHANCED ERROR CORRECTION AND MISSING THINGS\n\n';
-    return `${title}${correctionsWithCitations}${sourcesMarkdown}`;
+    return cleanLatexAndFormatting(`${title}${correctionsWithCitations}${sourcesMarkdown}`);
   } catch (error) {
     console.error("Error during agentic enhancement:", error);
     throw new Error("Failed during enhanced fact-checking process.");

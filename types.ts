@@ -18,12 +18,28 @@ export enum ProcessingStatus {
 }
 
 export enum GeminiModel {
-  PRO = 'gemini-2.5-pro',
-  FLASH = 'gemini-2.5-flash',
-  GEMINI_3_PRO = 'gemini-3-pro-preview',
-  GEMINI_3_FLASH = 'gemini-3-flash-preview',
-  GEMINI_3_1_PRO = 'gemini-3.1-pro-preview',
+  GEMINI_3_8_FLASH = 'gemini-3.8-flash',
+  GEMINI_3_7_FLASH = 'gemini-3.7-flash',
   GEMINI_3_5_FLASH = 'gemini-3.5-flash',
+  GEMINI_3_1_PRO = 'gemini-3.1-pro-preview',
+  GEMINI_3_FLASH = 'gemini-3-flash-preview',
+  GEMINI_3_PRO = 'gemini-3-pro-preview',
+  FLASH = 'gemini-2.5-flash',
+  PRO = 'gemini-2.5-pro',
+}
+
+export interface UploadProgressItem {
+  id: string;
+  fileName: string;
+  fileSize: number;
+  fileType: string;
+  loadedBytes: number;
+  totalBytes: number;
+  percentage: number;
+  status: 'uploading' | 'indexing' | 'completed' | 'error';
+  speed?: string;
+  errorMessage?: string;
+  completedAt?: number;
 }
 
 export interface AudioFile {
@@ -39,6 +55,7 @@ export interface AudioFile {
   originalId?: string;
   part?: number;
   groupId?: string;
+  size?: number;
 }
 
 export interface MergeGroup {
